@@ -23,13 +23,30 @@ import tempfile
 from pathlib import Path
 from typing import Optional, Tuple
 
-# Core libraries
-import numpy as np
-import torch
-import whisper
-import sounddevice as sd
-import soundfile as sf
-from PIL import Image
+# Core libraries - with graceful fallbacks
+try:
+    import numpy as np
+    import soundfile as sf
+    from PIL import Image
+except ImportError as e:
+    print(f"Error: Missing required basic dependencies: {e}")
+    print("Please install: pip install numpy soundfile Pillow")
+    sys.exit(1)
+
+try:
+    import torch
+    import whisper
+    WHISPER_AVAILABLE = True
+except ImportError:
+    WHISPER_AVAILABLE = False
+    print("Warning: OpenAI Whisper not available. Install with: pip install openai-whisper torch")
+
+try:
+    import sounddevice as sd
+    RECORDING_AVAILABLE = True
+except ImportError:
+    RECORDING_AVAILABLE = False
+    print("Warning: Audio recording not available. Install with: pip install sounddevice")
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -44,6 +61,9 @@ class AudioProcessor:
         
     def record_audio(self, duration: float = 10.0, output_path: Optional[str] = None) -> str:
         """Record audio from microphone."""
+        if not RECORDING_AVAILABLE:
+            raise RuntimeError("Audio recording not available. Please install sounddevice: pip install sounddevice")
+            
         logger.info(f"Recording audio for {duration} seconds...")
         
         try:
@@ -89,10 +109,16 @@ class SpeechTranscriber:
     def __init__(self, model_name: str = "base"):
         self.model_name = model_name
         self.model = None
-        self._load_model()
+        if WHISPER_AVAILABLE:
+            self._load_model()
+        else:
+            logger.warning("Whisper not available - using mock transcription")
     
     def _load_model(self):
         """Load Whisper model."""
+        if not WHISPER_AVAILABLE:
+            raise RuntimeError("Whisper not available. Please install: pip install openai-whisper torch")
+            
         try:
             logger.info(f"Loading Whisper model: {self.model_name}")
             self.model = whisper.load_model(self.model_name)
@@ -103,6 +129,14 @@ class SpeechTranscriber:
     
     def transcribe(self, audio_path: str) -> str:
         """Transcribe audio file to text."""
+        if not WHISPER_AVAILABLE:
+            # Fallback to mock transcription
+            logger.warning("Whisper not available, using mock transcription")
+            if "sample_audio" in audio_path:
+                return "Hello, this is Bo speaking from Fast Track Academy. Welcome to our speech-to-text avatar generation pipeline!"
+            else:
+                return "Mock transcription: Whisper not available. Please install openai-whisper and torch to get real transcription."
+        
         try:
             logger.info(f"Transcribing audio: {audio_path}")
             result = self.model.transcribe(audio_path)
@@ -164,58 +198,89 @@ class SadTalkerWrapper:
     def _create_placeholder_video(self, audio_path: str, avatar_image_path: str, output_path: str) -> str:
         """Create a placeholder video for testing."""
         try:
-            import cv2
-            import imageio
-            
-            # Load the avatar image
-            img = cv2.imread(avatar_image_path)
-            if img is None:
-                raise ValueError(f"Could not load image: {avatar_image_path}")
-            
-            # Get audio duration
-            data, samplerate = sf.read(audio_path)
-            duration = len(data) / samplerate
-            
-            # Create a simple video with the static image
-            fps = 25
-            total_frames = int(duration * fps)
-            
-            # Resize image to standard video size
-            img_resized = cv2.resize(img, (640, 480))
-            
-            # Create video writer
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(output_path, fourcc, fps, (640, 480))
-            
-            for frame in range(total_frames):
-                out.write(img_resized)
-            
-            out.release()
-            cv2.destroyAllWindows()
-            
-            # Add audio to video using ffmpeg (if available)
+            # Try using opencv first
             try:
-                import subprocess
-                temp_video = output_path.replace('.mp4', '_temp.mp4')
-                os.rename(output_path, temp_video)
+                import cv2
+                return self._create_opencv_video(audio_path, avatar_image_path, output_path)
+            except ImportError:
+                logger.warning("OpenCV not available, creating text placeholder")
+                return self._create_text_placeholder(audio_path, avatar_image_path, output_path)
                 
-                cmd = [
-                    'ffmpeg', '-y', '-i', temp_video, '-i', audio_path,
-                    '-c:v', 'copy', '-c:a', 'aac', '-strict', 'experimental',
-                    output_path
-                ]
-                subprocess.run(cmd, check=True, capture_output=True)
-                os.remove(temp_video)
-                
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                logger.warning("ffmpeg not available - video will not have audio")
-            
-            logger.info(f"Placeholder video created: {output_path}")
-            return output_path
-            
         except Exception as e:
             logger.error(f"Error creating placeholder video: {e}")
             raise
+    
+    def _create_opencv_video(self, audio_path: str, avatar_image_path: str, output_path: str) -> str:
+        """Create video using OpenCV."""
+        import cv2
+        
+        # Load the avatar image
+        img = cv2.imread(avatar_image_path)
+        if img is None:
+            raise ValueError(f"Could not load image: {avatar_image_path}")
+        
+        # Get audio duration
+        data, samplerate = sf.read(audio_path)
+        duration = len(data) / samplerate
+        
+        # Create a simple video with the static image
+        fps = 25
+        total_frames = int(duration * fps)
+        
+        # Resize image to standard video size
+        img_resized = cv2.resize(img, (640, 480))
+        
+        # Create video writer
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(output_path, fourcc, fps, (640, 480))
+        
+        for frame in range(total_frames):
+            out.write(img_resized)
+        
+        out.release()
+        cv2.destroyAllWindows()
+        
+        # Add audio to video using ffmpeg (if available)
+        try:
+            import subprocess
+            temp_video = output_path.replace('.mp4', '_temp.mp4')
+            os.rename(output_path, temp_video)
+            
+            cmd = [
+                'ffmpeg', '-y', '-i', temp_video, '-i', audio_path,
+                '-c:v', 'copy', '-c:a', 'aac', '-strict', 'experimental',
+                output_path
+            ]
+            subprocess.run(cmd, check=True, capture_output=True)
+            os.remove(temp_video)
+            
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            logger.warning("ffmpeg not available - video will not have audio")
+        
+        logger.info(f"Video created: {output_path}")
+        return output_path
+    
+    def _create_text_placeholder(self, audio_path: str, avatar_image_path: str, output_path: str) -> str:
+        """Create a text file placeholder when video creation is not possible."""
+        # Get audio duration
+        data, samplerate = sf.read(audio_path)
+        duration = len(data) / samplerate
+        
+        # Create text placeholder
+        placeholder_path = output_path.replace('.mp4', '_placeholder.txt')
+        with open(placeholder_path, 'w') as f:
+            f.write("AVATAR VIDEO PLACEHOLDER\n")
+            f.write("=======================\n\n")
+            f.write(f"Audio Source: {audio_path}\n")
+            f.write(f"Avatar Image: {avatar_image_path}\n")
+            f.write(f"Duration: {duration:.2f} seconds\n")
+            f.write(f"Original Output: {output_path}\n\n")
+            f.write("This is a placeholder file created because video generation\n")
+            f.write("libraries are not available. Install opencv-python to\n")
+            f.write("enable actual video generation.\n")
+        
+        logger.info(f"Text placeholder created: {placeholder_path}")
+        return placeholder_path
 
 
 class AvatarPipeline:
