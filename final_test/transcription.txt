@@ -1,0 +1,1 @@
+Hello, this is Bo speaking from Fast Track Academy. Welcome to our speech-to-text avatar generation pipeline!

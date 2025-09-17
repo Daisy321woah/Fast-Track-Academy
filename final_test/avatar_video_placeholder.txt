@@ -1,0 +1,11 @@
+AVATAR VIDEO PLACEHOLDER
+=======================
+
+Audio Source: assets/audio/sample_audio.wav
+Avatar Image: assets/images/bo_default.jpg
+Duration: 3.00 seconds
+Original Output: final_test/avatar_video.mp4
+
+This is a placeholder file created because video generation
+libraries are not available. Install opencv-python to
+enable actual video generation.
